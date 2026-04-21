@@ -61,7 +61,7 @@ EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 DRAFTS_FOLDER = os.getenv("DRAFTS_FOLDER", "Drafts")
 
-MODEL          = "claude-opus-4-7"
+MODEL          = "claude-haiku-4-5"
 MAX_TOKENS     = 4096
 MAX_ITERATIONS = 80     # bezpečnostní pojistka agentic loop
 MAX_EMAILS     = 30     # max emailů na jedno spuštění

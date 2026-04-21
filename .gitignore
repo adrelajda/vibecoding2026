@@ -1,0 +1,17 @@
+# Přihlašovací údaje a tajné klíče – NIKDY necommitovat!
+.env
+*.env
+gmail_token.pickle
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp

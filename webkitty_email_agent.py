@@ -1,34 +1,40 @@
 """
 Agent pro třídění e-mailů a navrhování odpovědí – webkitty webmail (IMAP).
 
-Agent se připojí k e-mailové schránce přes IMAP, přečte e-maily,
-přesune je do tematických složek a pro každý email uloží navržený
-koncept odpovědi do složky Drafts.
+Spouští se automaticky 1× denně v 8:00, třídí nepřečtené emaily do štítků
+a pro každý relevantní email uloží návrh odpovědi jako koncept.
+
+Pravidla třídění:
+    Analemma  – slova analemma/annalemma/annalema nebo dotaz k objednávce/doručení
+    kurz      – dotaz ke kurzu o vodě (moduly, videa, záznamy, přístupy)
+    miniprodukt – dotaz na kurz o vodě v krizi, video o vodě v krizi, magnet, miniprodukt
+    konzultace  – poptávka konzultace
+    Ostatní     – nespadá do žádné výše uvedené kategorie
 
 Požadavky:
     pip install -r requirements.txt
 
-Nastavení – proměnné prostředí:
+Proměnné prostředí:
     ANTHROPIC_API_KEY  - API klíč pro Anthropic Claude (povinné)
-    EMAIL_ADDRESS      - e-mailová adresa klientky, např. jana@webkitty.cz
+    EMAIL_ADDRESS      - e-mailová adresa klientky, např. jana@webkitty.cz (povinné)
     EMAIL_PASSWORD     - heslo k e-mailu (povinné)
     IMAP_HOST          - IMAP server  (výchozí: mail.webkitty.cz)
     IMAP_PORT          - IMAP port    (výchozí: 993, SSL/TLS)
     DRAFTS_FOLDER      - složka pro koncepty (výchozí: Drafts)
-    EMAIL_QUERY        - IMAP hledací dotaz (výchozí: UNSEEN)
-    EMAIL_FOLDER       - složka ke zpracování (výchozí: INBOX)
 
 Spuštění:
+    # Jednorázové zpracování (ručně)
     python webkitty_email_agent.py
-    python webkitty_email_agent.py "ALL"
-    python webkitty_email_agent.py "SINCE 01-Apr-2026"
 
-Nastavení IMAP pro webkitty:
-    Ověřte aktuální hodnoty v administraci účtu na webkitty.cz.
-    Typická konfigurace: IMAP mail.webkitty.cz:993 (SSL), SMTP mail.webkitty.cz:465 (SSL)
+    # Denní automatické spouštění v 8:00
+    python webkitty_email_agent.py --schedule
+
+    # Zpracování všech emailů (nejen nepřečtených)
+    python webkitty_email_agent.py ALL
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -36,24 +42,42 @@ import email
 import email.utils
 import imaplib
 import anthropic
+import schedule
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header, make_header
+from datetime import datetime
+from dotenv import load_dotenv
+
+# Načteme proměnné prostředí ze souboru .env (pokud existuje)
+load_dotenv()
 
 
 # ---------- Konfigurace ----------
 
-IMAP_HOST = os.getenv("IMAP_HOST", "mail.webkitty.cz")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+IMAP_HOST     = os.getenv("IMAP_HOST", "imap.dianasiswartonova.cz")
+IMAP_PORT     = int(os.getenv("IMAP_PORT", "993"))
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 DRAFTS_FOLDER = os.getenv("DRAFTS_FOLDER", "Drafts")
 
-MODEL = "claude-opus-4-7"
-MAX_TOKENS = 4096
+MODEL          = "claude-opus-4-7"
+MAX_TOKENS     = 4096
 MAX_ITERATIONS = 80     # bezpečnostní pojistka agentic loop
-MAX_EMAILS = 20         # max emailů na jedno spuštění
-BODY_LIMIT = 1500       # max znaků těla emailu předaných modelu
+MAX_EMAILS     = 30     # max emailů na jedno spuštění
+BODY_LIMIT     = 1500   # max znaků těla emailu předaných modelu
+
+# Předdefinované štítky – klíč = interní název, hodnota = IMAP složka
+LABEL_FOLDERS = {
+    "Analemma":   "Analemma",
+    "kurz":       "kurz",
+    "miniprodukt": "miniprodukt",
+    "konzultace": "konzultace",
+    "Ostatní":    "Ostatní",
+}
+
+# Štítky, pro které agent připraví návrh odpovědi
+LABELS_NEEDING_REPLY = {"Analemma", "kurz", "miniprodukt", "konzultace"}
 
 
 # ---------- IMAP pomocné funkce ----------
@@ -62,8 +86,7 @@ def _connect() -> imaplib.IMAP4_SSL:
     """Vytvoří a vrátí autentizované IMAP spojení."""
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         raise ValueError(
-            "Nejsou nastaveny proměnné prostředí EMAIL_ADDRESS a EMAIL_PASSWORD.\n"
-            "Spusťte:\n"
+            "Nastavte proměnné prostředí EMAIL_ADDRESS a EMAIL_PASSWORD.\n"
             "  export EMAIL_ADDRESS='jana@webkitty.cz'\n"
             "  export EMAIL_PASSWORD='vase-heslo'"
         )
@@ -74,11 +97,11 @@ def _connect() -> imaplib.IMAP4_SSL:
 
 def _select(conn: imaplib.IMAP4_SSL, folder: str, readonly: bool = False) -> None:
     """Vybere složku; automaticky přidá uvozovky pokud název obsahuje mezeru."""
-    name = f'"{folder}"' if " " in folder else folder
+    name = f'"{folder}"' if (" " in folder or "/" in folder) else folder
     conn.select(name, readonly=readonly)
 
 
-def _decode_header_value(value: str | None) -> str:
+def _decode_hdr(value: str | None) -> str:
     """Dekóduje MIME encoded-word hlavičku na Unicode string."""
     if not value:
         return ""
@@ -89,8 +112,7 @@ def _decode_header_value(value: str | None) -> str:
 
 
 def _extract_body(msg: email.message.Message) -> str:
-    """Extrahuje textové tělo e-mailové zprávy."""
-    body = ""
+    """Rekurzivně extrahuje textové tělo zprávy z MIME payload."""
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
@@ -99,47 +121,43 @@ def _extract_body(msg: email.message.Message) -> str:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    body = payload.decode(charset, errors="replace")
-                    break
+                    return payload.decode(charset, errors="replace")
     else:
         payload = msg.get_payload(decode=True)
         if payload:
             charset = msg.get_content_charset() or "utf-8"
-            body = payload.decode(charset, errors="replace")
-
-    return body[:BODY_LIMIT]
+            return payload.decode(charset, errors="replace")
+    return ""
 
 
 # ---------- Implementace nástrojů ----------
 
-def tool_list_folders(conn: imaplib.IMAP4_SSL) -> dict:
-    """Vrátí seznam IMAP složek."""
+def tool_list_label_folders(conn: imaplib.IMAP4_SSL) -> dict:
+    """Vrátí seznam existujících IMAP složek (budoucích štítků)."""
     typ, folder_list = conn.list()
-    folders = []
+    names = []
     for item in folder_list:
         decoded = item.decode("utf-8", errors="replace")
-        # Formát: (\\Atributy) "oddelovac" "Nazev"
+        # Formát: (\Atributy) "oddelovac" "Nazev"
         parts = decoded.rsplit(" ", 1)
         if parts:
             name = parts[-1].strip().strip('"')
-            folders.append(name)
-    return {"folders": folders}
+            names.append(name)
+    return {"folders": names}
 
 
 def tool_fetch_emails(
     conn: imaplib.IMAP4_SSL,
-    folder: str = "INBOX",
     query: str = "UNSEEN",
     max_results: int = 20,
 ) -> dict:
-    """Vrátí seznam emailů (UID, předmět, odesílatel, datum) ze zvolené složky."""
+    """Vrátí seznam emailů z INBOX (UID, předmět, odesílatel, datum)."""
     max_results = max(1, min(max_results, MAX_EMAILS))
     try:
-        _select(conn, folder, readonly=True)
+        _select(conn, "INBOX", readonly=True)
         typ, data = conn.uid("SEARCH", None, query)
         uids = data[0].split() if data[0] else []
-        # Vezmi posledních max_results (nejnovější)
-        uids = uids[-max_results:]
+        uids = uids[-max_results:]  # nejnovější naposledy
 
         emails = []
         for uid in uids:
@@ -149,76 +167,75 @@ def tool_fetch_emails(
             msg = email.message_from_bytes(msg_data[0][1])
             emails.append({
                 "uid": uid.decode(),
-                "subject": _decode_header_value(msg.get("Subject")),
-                "from": _decode_header_value(msg.get("From")),
+                "subject": _decode_hdr(msg.get("Subject")),
+                "from": _decode_hdr(msg.get("From")),
                 "date": msg.get("Date", ""),
                 "message_id": msg.get("Message-ID", ""),
             })
 
-        return {"count": len(emails), "folder": folder, "emails": emails}
+        return {"count": len(emails), "emails": emails}
     except Exception as e:
         return {"error": str(e)}
 
 
-def tool_get_email(
-    conn: imaplib.IMAP4_SSL,
-    uid: str,
-    folder: str = "INBOX",
-) -> dict:
-    """Načte plný obsah e-mailu (předmět, odesílatel, příjemce, datum, tělo)."""
+def tool_get_email(conn: imaplib.IMAP4_SSL, uid: str) -> dict:
+    """Načte plný obsah e-mailu z INBOX."""
     try:
-        _select(conn, folder, readonly=True)
+        _select(conn, "INBOX", readonly=True)
         typ, msg_data = conn.uid("FETCH", uid.encode(), "(RFC822)")
         if not msg_data or msg_data[0] is None:
-            return {"error": f"Email UID {uid} nenalezen ve složce {folder}"}
+            return {"error": f"Email UID {uid} nenalezen"}
 
         msg = email.message_from_bytes(msg_data[0][1])
+        body = _extract_body(msg)
+
         return {
             "uid": uid,
-            "folder": folder,
-            "subject": _decode_header_value(msg.get("Subject")),
-            "from": _decode_header_value(msg.get("From")),
-            "to": _decode_header_value(msg.get("To")),
+            "subject": _decode_hdr(msg.get("Subject")),
+            "from": _decode_hdr(msg.get("From")),
+            "to": _decode_hdr(msg.get("To")),
             "date": msg.get("Date", ""),
             "message_id": msg.get("Message-ID", ""),
-            "body": _extract_body(msg),
+            "body": body[:BODY_LIMIT],
         }
     except Exception as e:
         return {"error": str(e)}
 
 
-def tool_create_folder(conn: imaplib.IMAP4_SSL, name: str) -> dict:
-    """Vytvoří novou IMAP složku (kategorii)."""
+def tool_create_label_folder(conn: imaplib.IMAP4_SSL, name: str) -> dict:
+    """Vytvoří IMAP složku pro štítek (pokud ještě neexistuje)."""
     try:
-        typ, data = conn.create(name)
+        typ, _ = conn.create(name)
         if typ == "OK":
             return {"success": True, "folder": name}
-        return {"error": data[0].decode() if data else "Neznámá chyba"}
+        # Složka možná již existuje – to je OK
+        return {"success": True, "folder": name, "note": "Složka pravděpodobně již existuje"}
     except Exception as e:
         return {"error": str(e)}
 
 
-def tool_move_to_folder(
-    conn: imaplib.IMAP4_SSL,
-    uid: str,
-    src_folder: str,
-    dst_folder: str,
-) -> dict:
-    """Přesune email do jiné složky (třídění do kategorie)."""
+def tool_apply_label(conn: imaplib.IMAP4_SSL, uid: str, label: str) -> dict:
+    """
+    Přiřadí štítek e-mailu zkopírováním do složky štítku.
+    Email zůstane v INBOX a zároveň se objeví ve složce štítku.
+    """
+    folder = LABEL_FOLDERS.get(label, label)
     try:
-        _select(conn, src_folder)
-        # Pokus o RFC 6851 MOVE příkaz (většina moderních serverů ho podporuje)
-        typ, data = conn.uid("MOVE", uid.encode(), dst_folder)
+        _select(conn, "INBOX")
+        typ, data = conn.uid("COPY", uid.encode(), folder)
         if typ == "OK":
-            return {"success": True, "uid": uid, "destination": dst_folder}
+            return {"success": True, "uid": uid, "label": label, "folder": folder}
+        return {"error": f"COPY selhal: {data}"}
+    except Exception as e:
+        return {"error": str(e)}
 
-        # Fallback: COPY → DELETE → EXPUNGE
-        typ, data = conn.uid("COPY", uid.encode(), dst_folder)
-        if typ != "OK":
-            return {"error": f"Nelze kopírovat: {data}"}
-        conn.uid("STORE", uid.encode(), "+FLAGS", "\\Deleted")
-        conn.expunge()
-        return {"success": True, "uid": uid, "destination": dst_folder}
+
+def tool_mark_processed(conn: imaplib.IMAP4_SSL, uid: str) -> dict:
+    """Označí email v INBOX jako přečtený (zpracovaný agentem)."""
+    try:
+        _select(conn, "INBOX")
+        conn.uid("STORE", uid.encode(), "+FLAGS", "\\Seen")
+        return {"success": True, "uid": uid}
     except Exception as e:
         return {"error": str(e)}
 
@@ -226,20 +243,15 @@ def tool_move_to_folder(
 def tool_save_draft_reply(
     conn: imaplib.IMAP4_SSL,
     uid: str,
-    folder: str,
     reply_text: str,
 ) -> dict:
-    """
-    Uloží navržený text odpovědi jako koncept do složky Drafts.
-    Automaticky přidá citaci původní zprávy.
-    """
+    """Uloží navržený text odpovědi jako koncept do složky Drafts."""
     try:
-        # Načteme původní email pro citaci
-        original = tool_get_email(conn, uid, folder)
+        # Načteme původní email pro citaci a adresování
+        original = tool_get_email(conn, uid)
         if "error" in original:
             return {"error": f"Nelze načíst původní email: {original['error']}"}
 
-        # Sestavíme MIME zprávu
         msg = MIMEMultipart("alternative")
         subject = original.get("subject", "")
         msg["Subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
@@ -248,31 +260,28 @@ def tool_save_draft_reply(
         msg["In-Reply-To"] = original.get("message_id", "")
         msg["References"] = original.get("message_id", "")
         msg["Date"] = email.utils.formatdate(localtime=True)
-        msg["X-Draft-Info"] = "type=reply"
 
-        # Text s citací původní zprávy
+        # Citace původní zprávy
         quoted = "\n".join(f"> {line}" for line in original.get("body", "").split("\n"))
         full_body = (
             f"{reply_text}\n\n"
-            f"--- Původní zpráva ---\n"
+            f"---\n"
             f"Od: {original.get('from', '')}\n"
-            f"Datum: {original.get('date', '')}\n"
-            f"Předmět: {original.get('subject', '')}\n\n"
+            f"Datum: {original.get('date', '')}\n\n"
             f"{quoted}"
         )
         msg.attach(MIMEText(full_body, "plain", "utf-8"))
 
-        # Zkus různé kandidáty pro složku Drafts
+        raw = msg.as_bytes()
         draft_candidates = [DRAFTS_FOLDER, "Drafts", "Koncepty", "Draft", "DRAFTS"]
-        raw_msg = msg.as_bytes()
 
         for drafts_name in draft_candidates:
             try:
-                typ, data = conn.append(
+                typ, _ = conn.append(
                     drafts_name,
                     "\\Draft",
                     imaplib.Time2Internaldate(time.time()),
-                    raw_msg,
+                    raw,
                 )
                 if typ == "OK":
                     return {
@@ -284,7 +293,7 @@ def tool_save_draft_reply(
             except Exception:
                 continue
 
-        return {"error": "Složka Drafts nenalezena – zkuste nastavit DRAFTS_FOLDER"}
+        return {"error": "Složka Drafts nenalezena. Nastavte DRAFTS_FOLDER."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -293,35 +302,25 @@ def tool_save_draft_reply(
 
 TOOLS = [
     {
-        "name": "list_folders",
+        "name": "list_label_folders",
         "description": (
-            "Vrátí seznam všech IMAP složek v e-mailové schránce. "
-            "Zavolej jako první krok, abys věděl, jaké kategorie již existují."
+            "Vrátí seznam existujících IMAP složek (= štítků). "
+            "Zavolej jako první krok, abys věděla, které štítkové složky již existují."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "fetch_emails",
-        "description": (
-            "Vypíše emaily v dané složce. Vrátí UID, předmět, odesílatele a datum. "
-            "Pro přečtení těla zprávy použij get_email."
-        ),
+        "description": "Vrátí seznam nepřečtených emailů z INBOX s UID, předmětem, odesílatelem a datem.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "folder": {
-                    "type": "string",
-                    "description": "Název IMAP složky (výchozí: INBOX)",
-                },
                 "query": {
                     "type": "string",
                     "description": (
-                        "IMAP vyhledávací kritéria. Příklady: "
-                        "'UNSEEN' (nepřečtené), "
-                        "'ALL' (vše), "
-                        "'SINCE 01-Apr-2026', "
-                        "'FROM newsletter@example.com'. "
-                        "Výchozí: UNSEEN"
+                        "IMAP vyhledávací kritéria. "
+                        "Výchozí: 'UNSEEN' (nepřečtené). "
+                        "Alternativy: 'ALL', 'SINCE 01-Apr-2026', 'FROM example@example.com'"
                     ),
                 },
                 "max_results": {
@@ -335,8 +334,8 @@ TOOLS = [
     {
         "name": "get_email",
         "description": (
-            "Načte plný obsah e-mailu: předmět, odesílatel, příjemce, datum a tělo zprávy. "
-            "Nutné zavolat před uložením návrhu odpovědi."
+            "Načte plný obsah e-mailu z INBOX: předmět, odesílatel, příjemce, datum a tělo zprávy. "
+            "Povinné před přiřazením štítku."
         ),
         "input_schema": {
             "type": "object",
@@ -345,19 +344,15 @@ TOOLS = [
                     "type": "string",
                     "description": "UID emailu (z fetch_emails)",
                 },
-                "folder": {
-                    "type": "string",
-                    "description": "Složka, ve které email leží (výchozí: INBOX)",
-                },
             },
             "required": ["uid"],
         },
     },
     {
-        "name": "create_folder",
+        "name": "create_label_folder",
         "description": (
-            "Vytvoří novou složku (kategorii) v IMAP schránce. "
-            "Volej pouze pokud vhodná složka ještě neexistuje."
+            "Vytvoří složku pro štítek, pokud ještě neexistuje. "
+            "Zavolej před prvním použitím apply_label pro daný štítek."
         ),
         "input_schema": {
             "type": "object",
@@ -365,10 +360,8 @@ TOOLS = [
                 "name": {
                     "type": "string",
                     "description": (
-                        "Název složky. Doporučené kategorie: "
-                        "'Práce', 'Osobní', 'Newslettery', 'Faktury', "
-                        "'Sociální sítě', 'Akce', 'Cestování', "
-                        "'Bankovnictví', 'Systémová oznámení'"
+                        "Název složky. Povolené hodnoty: "
+                        "'Analemma', 'kurz', 'miniprodukt', 'konzultace', 'Ostatní'"
                     ),
                 },
             },
@@ -376,8 +369,12 @@ TOOLS = [
         },
     },
     {
-        "name": "move_to_folder",
-        "description": "Přesune email do tematické složky (třídění).",
+        "name": "apply_label",
+        "description": (
+            "Přiřadí štítek emailu (zkopíruje ho do složky štítku). "
+            "Email zůstane v INBOX i ve složce štítku. "
+            "Jeden email může mít více štítků – volej apply_label pro každý štítek zvlášť."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -385,24 +382,32 @@ TOOLS = [
                     "type": "string",
                     "description": "UID emailu",
                 },
-                "src_folder": {
+                "label": {
                     "type": "string",
-                    "description": "Zdrojová složka (výchozí: INBOX)",
-                },
-                "dst_folder": {
-                    "type": "string",
-                    "description": "Cílová složka (kategorie)",
+                    "enum": ["Analemma", "kurz", "miniprodukt", "konzultace", "Ostatní"],
+                    "description": "Název štítku dle pravidel třídění",
                 },
             },
-            "required": ["uid", "src_folder", "dst_folder"],
+            "required": ["uid", "label"],
+        },
+    },
+    {
+        "name": "mark_processed",
+        "description": "Označí email jako přečtený v INBOX (signalizuje, že byl zpracován agentem).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uid": {"type": "string", "description": "UID emailu"},
+            },
+            "required": ["uid"],
         },
     },
     {
         "name": "save_draft_reply",
         "description": (
             "Uloží navržený text odpovědi jako koncept do složky Drafts. "
-            "Automaticky cituje původní zprávu. "
-            "Volej po přečtení emailu (get_email), pokud je vhodné odpovědět."
+            "Volej pro štítky: Analemma, kurz, miniprodukt, konzultace. "
+            "NEPŘIPRÁVEJ odpověď pro štítek Ostatní."
         ),
         "input_schema": {
             "type": "object",
@@ -411,20 +416,17 @@ TOOLS = [
                     "type": "string",
                     "description": "UID emailu, na který odpovídáme",
                 },
-                "folder": {
-                    "type": "string",
-                    "description": "Složka, kde se email nachází",
-                },
                 "reply_text": {
                     "type": "string",
                     "description": (
-                        "Text navržené odpovědi. Piš přirozeně a profesionálně "
-                        "v jazyce, ve kterém byl email napsán. "
-                        "Nepřidávej 'Předmět:' ani 'Od:' – ty se doplní automaticky."
+                        "Text navržené odpovědi. "
+                        "Piš v jazyce původního emailu (česky/anglicky). "
+                        "Buď přátelská, profesionální a věcná. "
+                        "Nepřidávej 'Předmět:' ani 'Od:' – doplní se automaticky."
                     ),
                 },
             },
-            "required": ["uid", "folder", "reply_text"],
+            "required": ["uid", "reply_text"],
         },
     },
 ]
@@ -432,86 +434,93 @@ TOOLS = [
 
 # ---------- Systémový prompt ----------
 
-SYSTEM_PROMPT = """Jsi inteligentní asistentka pro správu e-mailové schránky. Pomáháš klientce organizovat její e-maily a připravuješ návrhy odpovědí.
+SYSTEM_PROMPT = f"""Jsi asistentka pro správu e-mailové schránky. Každý den v 8:00 zpracuješ nepřečtené emaily, přiřadíš jim štítky a připravíš návrhy odpovědí.
 
-## Postup práce
+## Postup pro každý email
 
-1. **Zobraz složky** – zavolej `list_folders`, abys věděla, jaké kategorie již existují
-2. **Načti emaily** – zavolej `fetch_emails` se zadaným dotazem
-3. **Pro každý email sekvenčně:**
-   a. Přečti obsah: `get_email`
-   b. Urči kategorii a přesuň do složky: `move_to_folder`
-      (Pokud složka neexistuje, vytvoř ji nejdříve: `create_folder`)
-   c. Navrhni a ulož odpověď: `save_draft_reply`
-      (Přeskočit pokud jde o newsletter, reklamu nebo automatickou notifikaci)
-4. **Závěrečné shrnutí** – kolik emailů zpracováno, do jakých kategorií, kolik návrhů odpovědí
+1. Přečti obsah: `get_email`
+2. Urči štítky podle pravidel níže (může být více štítků)
+3. Vytvoř složky pokud chybí: `create_label_folder`
+4. Přiřaď štítky: `apply_label` (pro každý štítek zvlášť)
+5. Připrav odpověď: `save_draft_reply` (POUZE pro Analemma / kurz / miniprodukt / konzultace)
+6. Označ jako přečtený: `mark_processed`
 
-## Kategorie složek
+## Pravidla přiřazování štítků
 
-| Složka | Kdy použít |
-|--------|------------|
-| Práce | Pracovní komunikace, projekty, kolegové, klienti, obchodní partneři |
-| Osobní | Přátelé, rodina, soukromá komunikace |
-| Newslettery | Pravidelné zpravodaje, blog updates, info emaily |
-| Faktury | Faktury, platební potvrzení, účtenky, objednávky |
-| Sociální sítě | Notifikace z LinkedIn, Facebook, Twitter/X, Instagram |
-| Akce | Reklamní nabídky, slevy, slevové kódy, marketingové emaily |
-| Cestování | Letenky, hotely, rezervace, cestovní informace |
-| Bankovnictví | Bankovní výpisy, finanční notifikace, transakce |
-| Systémová oznámení | GitHub, CI/CD, monitoring, automatické zprávy systémů |
+### Štítek "Analemma"
+Přiřaď pokud email obsahuje COKOLI z:
+- Slova (bez ohledu na velikost písmen): **analemma**, **annalemma**, **annalema**
+- Dotaz na **doručení zásilky nebo balíčku**
+- Dotaz na **odeslání objednávky**
+- Dotaz k **objednávce** (stav, číslo, reklamace, vrácení, platba)
 
-## Pravidla pro návrh odpovědí
+### Štítek "kurz"
+Přiřaď pokud email obsahuje dotaz nebo zájem o:
+- **Kurz o vodě** (obecně – jakékoli zmínění kurzu o vodě)
+- **Moduly** kurzu
+- **Videa** nebo **záznamy** z kurzu
+- **Přístupy** do kurzu / přihlašovací údaje ke kurzu
+⚠️ VÝJIMKA: Pokud jde konkrétně o „kurz o vodě v krizi" nebo „video o vodě v krizi" → použij štítek **miniprodukt**, ne kurz
 
-- Piš v jazyce původního emailu (česky, anglicky, ...)
-- Buď profesionální, přátelská a věcná – navrhuj realistické odpovědi
-- Pro pracovní emaily: potvrď přijetí, nastín dalšího postupu nebo odpověz na otázku
-- Pro osobní emaily: reaguj přirozeně a lidsky
-- Newslettery, reklamy a automatická oznámení: NEPŘIPRAVUJ odpověď
-- Faktury: navrhni potvrzení přijetí nebo dotaz na upřesnění (dle kontextu)
+### Štítek "miniprodukt"
+Přiřaď pokud email zmiňuje:
+- **kurz o vodě v krizi**
+- **video o vodě v krizi**
+- **magnet** nebo **lead magnet**
+- **miniprodukt**
 
-## Pravidla obecná
+### Štítek "konzultace"
+Přiřaď pokud email obsahuje:
+- Zájem o **konzultaci** (osobní, online, telefonní)
+- **Poptávku spolupráce** nebo individuální práce
 
-- Vždy přečti email (get_email) před přesunutím nebo odpovědí
-- Preferuj existující složky před vytvářením duplicit
-- Zpracuj všechny emaily ze seznamu
+### Štítek "Ostatní"
+Přiřaď pokud email **nespadá do žádné** výše uvedené kategorie.
+
+## Priorita a kombinace
+- Jeden email může dostat **více štítků** (např. Analemma + konzultace)
+- **miniprodukt** a **kurz** se vzájemně **vylučují** – miniprodukt má přednost
+- **Ostatní** se nepřiřazuje společně s jinými štítky
+
+## Návrhy odpovědí – pokyny
+- Piš v jazyce původního emailu (česky / anglicky / ...)
+- Buď přátelská, profesionální a věcná
+- **Analemma**: potvrď přijetí dotazu, informuj že se ozveš nebo předej kontakt zákaznického servisu
+- **kurz**: potvrď zájem, krátce popiš možnosti a nabídni další informace nebo odkaz
+- **miniprodukt**: potvrď zájem o miniprodukt/magnet, informuj o dostupnosti a dalším postupu
+- **konzultace**: potvrď zájem, nabídni termín nebo instrukce k objednání konzultace
+- **Ostatní**: ŽÁDNÁ odpověď
+
+## Závěr
+Po zpracování všech emailů napiš stručné shrnutí:
+- Celkový počet zpracovaných emailů
+- Kolik dostalo který štítek
+- Kolik návrhů odpovědí bylo uloženo
 """
 
 
 # ---------- Dispečer nástrojů ----------
 
 def execute_tool(conn: imaplib.IMAP4_SSL, name: str, inputs: dict) -> str:
-    """Spustí příslušný nástroj a vrátí JSON výsledek."""
-    if name == "list_folders":
-        result = tool_list_folders(conn)
+    """Spustí příslušný nástroj a vrátí JSON výsledek jako string."""
+    if name == "list_label_folders":
+        result = tool_list_label_folders(conn)
     elif name == "fetch_emails":
         result = tool_fetch_emails(
             conn,
-            folder=inputs.get("folder", "INBOX"),
             query=inputs.get("query", "UNSEEN"),
             max_results=inputs.get("max_results", 20),
         )
     elif name == "get_email":
-        result = tool_get_email(
-            conn,
-            uid=inputs["uid"],
-            folder=inputs.get("folder", "INBOX"),
-        )
-    elif name == "create_folder":
-        result = tool_create_folder(conn, inputs["name"])
-    elif name == "move_to_folder":
-        result = tool_move_to_folder(
-            conn,
-            uid=inputs["uid"],
-            src_folder=inputs.get("src_folder", "INBOX"),
-            dst_folder=inputs["dst_folder"],
-        )
+        result = tool_get_email(conn, uid=inputs["uid"])
+    elif name == "create_label_folder":
+        result = tool_create_label_folder(conn, name=inputs["name"])
+    elif name == "apply_label":
+        result = tool_apply_label(conn, uid=inputs["uid"], label=inputs["label"])
+    elif name == "mark_processed":
+        result = tool_mark_processed(conn, uid=inputs["uid"])
     elif name == "save_draft_reply":
-        result = tool_save_draft_reply(
-            conn,
-            uid=inputs["uid"],
-            folder=inputs.get("folder", "INBOX"),
-            reply_text=inputs["reply_text"],
-        )
+        result = tool_save_draft_reply(conn, uid=inputs["uid"], reply_text=inputs["reply_text"])
     else:
         result = {"error": f"Neznámý nástroj: {name}"}
 
@@ -520,16 +529,15 @@ def execute_tool(conn: imaplib.IMAP4_SSL, name: str, inputs: dict) -> str:
 
 # ---------- Hlavní smyčka agenta ----------
 
-def run_agent(folder: str = "INBOX", query: str = "UNSEEN") -> None:
-    """Spustí e-mail agenta pro danou složku a IMAP dotaz."""
+def run_agent(query: str = "UNSEEN") -> None:
+    """Spustí e-mail agenta pro zadaný IMAP dotaz."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print("=" * 60)
-    print("  Agent pro třídění e-mailů a návrhy odpovědí")
-    print("  webkitty webmail (IMAP)")
+    print(f"  Agent pro třídění e-mailů  –  {now}")
     print("=" * 60)
     print(f"  Model:   {MODEL}")
     print(f"  Server:  {IMAP_HOST}:{IMAP_PORT}")
     print(f"  Účet:    {EMAIL_ADDRESS or '(nenastaveno)'}")
-    print(f"  Složka:  {folder}")
     print(f"  Dotaz:   {query}")
     print()
 
@@ -543,10 +551,9 @@ def run_agent(folder: str = "INBOX", query: str = "UNSEEN") -> None:
         {
             "role": "user",
             "content": (
-                f"Prosím, projdi e-maily ve složce '{folder}' "
-                f"(vyhledávací dotaz: '{query}'). "
-                f"Pro každý email: urči kategorii a přesuň do příslušné složky, "
-                f"a pokud jde o zprávu vyžadující odpověď, ulož návrh odpovědi jako koncept."
+                f"Zpracuj prosím dnešní nepřečtené emaily (IMAP dotaz: '{query}'). "
+                f"Pro každý email urči štítek(y) dle pravidel a připrav návrh odpovědi "
+                f"u emailů, které to vyžadují."
             ),
         }
     ]
@@ -575,21 +582,23 @@ def run_agent(folder: str = "INBOX", query: str = "UNSEEN") -> None:
                 if block.type != "tool_use":
                     continue
 
-                # Vizuální ikona dle typu operace
-                read_ops = {"list_folders", "fetch_emails", "get_email"}
-                write_ops = {"save_draft_reply"}
-                if block.name in read_ops:
+                # Vizuální ikona
+                if block.name in {"list_label_folders", "fetch_emails", "get_email"}:
                     icon = "🔍"
-                elif block.name in write_ops:
+                elif block.name == "save_draft_reply":
                     icon = "💬"
+                elif block.name == "apply_label":
+                    icon = "🏷️"
+                elif block.name == "mark_processed":
+                    icon = "✓"
                 else:
                     icon = "📁"
 
-                inputs_preview = json.dumps(block.input, ensure_ascii=False)[:120]
+                inputs_preview = json.dumps(block.input, ensure_ascii=False)[:130]
                 print(f"{icon} [{iteration}] {block.name}({inputs_preview})")
 
                 result_str = execute_tool(conn, block.name, block.input)
-                print(f"     → {result_str[:220]}\n")
+                print(f"     → {result_str[:230]}\n")
 
                 tool_results.append({
                     "type": "tool_result",
@@ -608,7 +617,41 @@ def run_agent(folder: str = "INBOX", query: str = "UNSEEN") -> None:
     conn.logout()
 
 
+# ---------- Scheduler (denní běh v 8:00) ----------
+
+def _scheduled_run() -> None:
+    """Obálka pro scheduler – spustí agenta a zachytí případné výjimky."""
+    try:
+        run_agent(query="UNSEEN")
+    except Exception as e:
+        print(f"❌ Chyba při zpracování emailů: {e}")
+
+
+def run_scheduler() -> None:
+    """Spustí denní scheduler – agent poběží každý den v 8:00."""
+    print("⏰ Scheduler spuštěn.")
+    print(f"   Agent bude spouštět každý den v 08:00 ({IMAP_HOST})")
+    print("   Pro zastavení stiskněte Ctrl+C\n")
+
+    schedule.every().day.at("08:00").do(_scheduled_run)
+
+    # Spustit okamžitě při startu (zpracuje dnešní emaily hned)
+    print("▶  Spouštím první zpracování hned teď...\n")
+    _scheduled_run()
+
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+# ---------- Vstupní bod ----------
+
 if __name__ == "__main__":
-    src_folder = os.getenv("EMAIL_FOLDER", "INBOX")
-    imap_query = sys.argv[1] if len(sys.argv) > 1 else os.getenv("EMAIL_QUERY", "UNSEEN")
-    run_agent(folder=src_folder, query=imap_query)
+    args = sys.argv[1:]
+
+    if "--schedule" in args:
+        run_scheduler()
+    else:
+        # Jednorázové spuštění (volitelně s vlastním IMAP dotazem)
+        query = next((a for a in args if not a.startswith("--")), "UNSEEN")
+        run_agent(query=query)

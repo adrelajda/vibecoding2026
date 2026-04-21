@@ -1,0 +1,13 @@
+# Závislosti pro email agenty
+# Instalace: pip install -r requirements.txt
+
+# Anthropic Claude API
+anthropic>=0.49.0
+
+# Google Gmail API (pro email_sorting_agent.py – Gmail varianta)
+google-api-python-client>=2.120.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# IMAP/SMTP jsou součástí standardní knihovny Pythonu (imaplib, smtplib, email)
+# – žádné další balíčky nejsou potřeba pro webkitty_email_agent.py

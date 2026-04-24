@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jana Popelka — Ta, která vidí</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --ink: #1a1016;
+      --smoke: #f0ebe8;
+      --bone: #e8e0d8;
+      --ember: #8b3a2a;
+      --gold: #b8962e;
+      --gold-light: #d4aa44;
+      --mist: #6b5f6e;
+      --deep: #0d0a10;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background-color: var(--deep);
+      color: var(--smoke);
+      font-family: 'EB Garamond', Georgia, serif;
+      font-size: 18px;
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+
+    /* ─── STARS CANVAS ─── */
+    #stars-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ─── NAV ─── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1.4rem 3rem;
+      background: linear-gradient(to bottom, rgba(13,10,16,0.95) 0%, transparent 100%);
+    }
+
+    .nav-logo {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.1rem;
+      font-weight: 300;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--gold-light);
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2.5rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.85rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--bone);
+      text-decoration: none;
+      opacity: 0.7;
+      transition: opacity 0.3s, color 0.3s;
+    }
+
+    .nav-links a:hover {
+      opacity: 1;
+      color: var(--gold-light);
+    }
+
+    /* ─── HERO ─── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+    }
+
+    .hero-sigil {
+      width: 90px;
+      height: 90px;
+      margin-bottom: 2.5rem;
+      opacity: 0.85;
+      animation: rotate-slow 40s linear infinite;
+    }
+
+    @keyframes rotate-slow {
+      to { transform: rotate(360deg); }
+    }
+
+    .hero-eyeline {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.8rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 1.2rem;
+      opacity: 0.9;
+    }
+
+    .hero-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(3.2rem, 8vw, 7rem);
+      font-weight: 300;
+      line-height: 1.05;
+      letter-spacing: 0.02em;
+      color: var(--smoke);
+      margin-bottom: 0.4rem;
+    }
+
+    .hero-title em {
+      font-style: italic;
+      color: var(--gold-light);
+    }
+
+    .hero-subtitle {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(1.1rem, 2.5vw, 1.6rem);
+      font-weight: 300;
+      font-style: italic;
+      color: var(--mist);
+      letter-spacing: 0.04em;
+      margin-top: 1rem;
+      margin-bottom: 3rem;
+    }
+
+    .hero-cta {
+      display: inline-block;
+      padding: 0.85rem 2.5rem;
+      border: 1px solid rgba(184, 150, 46, 0.5);
+      color: var(--gold-light);
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.85rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      text-decoration: none;
+      transition: background 0.4s, border-color 0.4s, color 0.4s;
+    }
+
+    .hero-cta:hover {
+      background: rgba(184, 150, 46, 0.12);
+      border-color: var(--gold-light);
+      color: #fff;
+    }
+
+    .scroll-hint {
+      position: absolute;
+      bottom: 2.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+      opacity: 0.4;
+      animation: bob 2.5s ease-in-out infinite;
+    }
+
+    .scroll-hint span {
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .scroll-hint svg {
+      width: 18px;
+    }
+
+    @keyframes bob {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50% { transform: translateX(-50%) translateY(6px); }
+    }
+
+    /* ─── DIVIDER ─── */
+    .rune-divider {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 1rem 0;
+      color: var(--gold);
+      opacity: 0.4;
+      font-size: 1.2rem;
+      letter-spacing: 0.5em;
+    }
+
+    /* ─── SECTION BASE ─── */
+    section {
+      position: relative;
+      z-index: 1;
+      padding: 6rem 2rem;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    section.full-width {
+      max-width: 100%;
+      padding-left: 0;
+      padding-right: 0;
+    }
+
+    .section-label {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.75rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--gold);
+      opacity: 0.8;
+      margin-bottom: 1.2rem;
+      display: block;
+    }
+
+    h2 {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(2rem, 4vw, 3.2rem);
+      font-weight: 300;
+      line-height: 1.15;
+      color: var(--smoke);
+      margin-bottom: 1.8rem;
+    }
+
+    h2 em {
+      font-style: italic;
+      color: var(--gold-light);
+    }
+
+    p {
+      color: rgba(240, 235, 232, 0.75);
+      margin-bottom: 1.2rem;
+      max-width: 68ch;
+    }
+
+    /* ─── O MNĚ ─── */
+    .about {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5rem;
+      align-items: center;
+    }
+
+    .about-visual {
+      position: relative;
+    }
+
+    .about-frame {
+      position: relative;
+      aspect-ratio: 3/4;
+      background: linear-gradient(135deg, #1e1520 0%, #0d0a10 100%);
+      overflow: hidden;
+    }
+
+    .about-frame::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse at 30% 60%, rgba(139,58,42,0.25) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 20%, rgba(184,150,46,0.15) 0%, transparent 50%);
+    }
+
+    .about-frame-eye {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.18;
+    }
+
+    .frame-border {
+      position: absolute;
+      inset: 1rem;
+      border: 1px solid rgba(184,150,46,0.3);
+    }
+
+    .frame-corner {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border-color: var(--gold);
+      border-style: solid;
+      opacity: 0.7;
+    }
+
+    .fc-tl { top: 0.6rem; left: 0.6rem; border-width: 1px 0 0 1px; }
+    .fc-tr { top: 0.6rem; right: 0.6rem; border-width: 1px 1px 0 0; }
+    .fc-bl { bottom: 0.6rem; left: 0.6rem; border-width: 0 0 1px 1px; }
+    .fc-br { bottom: 0.6rem; right: 0.6rem; border-width: 0 1px 1px 0; }
+
+    .about-text blockquote {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.5rem;
+      font-style: italic;
+      font-weight: 300;
+      color: var(--smoke);
+      line-height: 1.4;
+      border-left: 2px solid rgba(184,150,46,0.5);
+      padding-left: 1.5rem;
+      margin: 2rem 0;
+    }
+
+    /* ─── SERVICES GRID ─── */
+    .services-section {
+      text-align: center;
+      max-width: 1100px;
+    }
+
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2px;
+      margin-top: 4rem;
+    }
+
+    .service-card {
+      background: rgba(255,255,255,0.025);
+      border: 1px solid rgba(184,150,46,0.12);
+      padding: 3rem 2rem;
+      text-align: left;
+      transition: background 0.4s, border-color 0.4s;
+      cursor: default;
+    }
+
+    .service-card:hover {
+      background: rgba(184,150,46,0.06);
+      border-color: rgba(184,150,46,0.3);
+    }
+
+    .service-icon {
+      font-size: 1.8rem;
+      margin-bottom: 1.2rem;
+      display: block;
+      opacity: 0.7;
+    }
+
+    .service-card h3 {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.3rem;
+      font-weight: 400;
+      color: var(--smoke);
+      margin-bottom: 0.8rem;
+    }
+
+    .service-card p {
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: rgba(240,235,232,0.55);
+      max-width: unset;
+      margin-bottom: 0;
+    }
+
+    /* ─── QUOTE BREAK ─── */
+    .quote-break {
+      position: relative;
+      z-index: 1;
+      background: linear-gradient(to right, transparent, rgba(139,58,42,0.08), transparent);
+      border-top: 1px solid rgba(184,150,46,0.12);
+      border-bottom: 1px solid rgba(184,150,46,0.12);
+      padding: 5rem 2rem;
+      text-align: center;
+    }
+
+    .quote-break blockquote {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(1.6rem, 3vw, 2.4rem);
+      font-style: italic;
+      font-weight: 300;
+      color: var(--smoke);
+      max-width: 800px;
+      margin: 0 auto 1rem;
+      line-height: 1.4;
+    }
+
+    .quote-break cite {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.8rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gold);
+      opacity: 0.7;
+      font-style: normal;
+    }
+
+    /* ─── CONTACT ─── */
+    .contact-section {
+      text-align: center;
+    }
+
+    .contact-section p {
+      max-width: 52ch;
+      margin: 0 auto 2.5rem;
+    }
+
+    .contact-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: var(--gold-light);
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.1rem;
+      font-style: italic;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(212,170,68,0.3);
+      padding-bottom: 2px;
+      transition: border-color 0.3s, opacity 0.3s;
+    }
+
+    .contact-link:hover {
+      border-color: var(--gold-light);
+      opacity: 0.85;
+    }
+
+    /* ─── FOOTER ─── */
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 3rem 2rem 4rem;
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+
+    footer p {
+      font-size: 0.78rem;
+      letter-spacing: 0.1em;
+      color: rgba(240,235,232,0.25);
+      max-width: unset;
+      margin: 0;
+    }
+
+    /* ─── FADE-IN ANIMATION ─── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(22px);
+      transition: opacity 0.8s ease, transform 0.8s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* ─── RESPONSIVE ─── */
+    @media (max-width: 768px) {
+      nav { padding: 1.2rem 1.5rem; }
+      .nav-links { gap: 1.5rem; }
+      .about { grid-template-columns: 1fr; gap: 3rem; }
+      .about-frame { max-width: 280px; margin: 0 auto; }
+      .services-grid { grid-template-columns: 1fr; }
+      .services-section { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="stars-canvas"></canvas>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">Jana Popelka</a>
+  <ul class="nav-links">
+    <li><a href="#o-mne">O mně</a></li>
+    <li><a href="#sluzby">Služby</a></li>
+    <li><a href="#kontakt">Kontakt</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <!-- Sigil SVG -->
+  <svg class="hero-sigil" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="50" cy="50" r="46" stroke="#b8962e" stroke-width="0.6" opacity="0.5"/>
+    <circle cx="50" cy="50" r="38" stroke="#b8962e" stroke-width="0.4" opacity="0.3"/>
+    <!-- Eye -->
+    <ellipse cx="50" cy="50" rx="18" ry="10" stroke="#b8962e" stroke-width="0.8" opacity="0.9"/>
+    <circle cx="50" cy="50" r="4.5" fill="#b8962e" opacity="0.8"/>
+    <circle cx="50" cy="50" r="7" stroke="#b8962e" stroke-width="0.5" opacity="0.4"/>
+    <!-- Star points -->
+    <line x1="50" y1="4" x2="50" y2="22" stroke="#b8962e" stroke-width="0.5" opacity="0.5"/>
+    <line x1="50" y1="78" x2="50" y2="96" stroke="#b8962e" stroke-width="0.5" opacity="0.5"/>
+    <line x1="4" y1="50" x2="22" y2="50" stroke="#b8962e" stroke-width="0.5" opacity="0.5"/>
+    <line x1="78" y1="50" x2="96" y2="50" stroke="#b8962e" stroke-width="0.5" opacity="0.5"/>
+    <line x1="14" y1="14" x2="27" y2="27" stroke="#b8962e" stroke-width="0.5" opacity="0.3"/>
+    <line x1="86" y1="14" x2="73" y2="27" stroke="#b8962e" stroke-width="0.5" opacity="0.3"/>
+    <line x1="14" y1="86" x2="27" y2="73" stroke="#b8962e" stroke-width="0.5" opacity="0.3"/>
+    <line x1="86" y1="86" x2="73" y2="73" stroke="#b8962e" stroke-width="0.5" opacity="0.3"/>
+  </svg>
+
+  <p class="hero-eyeline">Ta, která vidí</p>
+  <h1 class="hero-title">Jana<br/><em>Popelka</em></h1>
+  <p class="hero-subtitle">čarodějka · věštkyně · průvodkyně</p>
+  <a href="#o-mne" class="hero-cta">Vstoupit do světla</a>
+
+  <div class="scroll-hint" aria-hidden="true">
+    <span>Dolů</span>
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M10 3v14M4 11l6 6 6-6"/>
+    </svg>
+  </div>
+</div>
+
+<!-- DIVIDER -->
+<div class="rune-divider" aria-hidden="true">✦ ᚱ ✦ ᚷ ✦ ᚹ ✦</div>
+
+<!-- O MNĚ -->
+<section id="o-mne">
+  <div class="about">
+    <div class="about-visual reveal">
+      <div class="about-frame">
+        <div class="frame-corner fc-tl"></div>
+        <div class="frame-corner fc-tr"></div>
+        <div class="frame-corner fc-bl"></div>
+        <div class="frame-corner fc-br"></div>
+        <div class="frame-border"></div>
+        <div class="about-frame-eye">
+          <!-- Large decorative eye -->
+          <svg width="200" height="120" viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="100" cy="60" rx="90" ry="50" stroke="#b8962e" stroke-width="1"/>
+            <circle cx="100" cy="60" r="22" stroke="#b8962e" stroke-width="0.8"/>
+            <circle cx="100" cy="60" r="13" fill="#b8962e"/>
+            <circle cx="107" cy="54" r="4" fill="#0d0a10"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+    <div class="about-text reveal">
+      <span class="section-label">O mně</span>
+      <h2>Vidím to,<br/>co ostatní <em>přehlíží</em></h2>
+      <p>
+        Jsem Jana Popelka — čarodějka, intuitivní průvodkyně a ta, která vidí za závoj všedního světa.
+        Pracuji s energiemi, symboly a pradávnou moudrostí, abych pomohla lidem nalézt jejich vlastní cestu.
+      </p>
+      <p>
+        Moje práce stojí na hlubokém naslouchání — sobě, druhým i tichým hlasům světa kolem nás.
+        Věřím, že každý člověk nese v sobě světlo. Někdy stačí jen otevřít správné oči.
+      </p>
+      <blockquote>
+        „Magie není v tom, co vidíme —<br/>ale v tom, jak se odvážíme dívat."
+      </blockquote>
+    </div>
+  </div>
+</section>
+
+<!-- QUOTE BREAK -->
+<div class="quote-break">
+  <blockquote>
+    „Každá čarodějka začíná tím, že se přestane bát vlastní hloubky."
+  </blockquote>
+  <cite>— Jana Popelka</cite>
+</div>
+
+<!-- SLUŽBY -->
+<section id="sluzby" class="services-section reveal" style="max-width:1100px; margin: 0 auto; padding: 6rem 2rem;">
+  <span class="section-label" style="text-align:center; display:block;">Co nabízím</span>
+  <h2 style="text-align:center;">Cesty, kudy <em>vstoupit</em></h2>
+  <div class="services-grid">
+    <div class="service-card reveal">
+      <span class="service-icon">◉</span>
+      <h3>Individuální konzultace</h3>
+      <p>Osobní setkání v bezpečném prostoru. Přijď se svou otázkou — odejdeš s jasností. Pracujeme s kartami, energií nebo intuitivním čtením.</p>
+    </div>
+    <div class="service-card reveal">
+      <span class="service-icon">⟁</span>
+      <h3>Energetická práce</h3>
+      <p>Čištění, ukotvení a práce s osobními energetickými poli. Pokud cítíš, že neseš cizí tíhu — pomůžu ti ji složit.</p>
+    </div>
+    <div class="service-card reveal">
+      <span class="service-icon">☽</span>
+      <h3>Skupinové rituály</h3>
+      <p>Společné setkání pod měsícem nebo v kruhu. Síla komunity, tichá magie a sdílené světlo — pro ty, kdo hledají spřízněné duše.</p>
+    </div>
+    <div class="service-card reveal">
+      <span class="service-icon">✦</span>
+      <h3>Online seance</h3>
+      <p>Vzdálenost není překážkou pro ten, kdo vidí. Stejná hloubka, stejná pozornost — z pohodlí tvého domova.</p>
+    </div>
+    <div class="service-card reveal">
+      <span class="service-icon">⧖</span>
+      <h3>Průvodcovství v čase</h3>
+      <p>Hlubší práce s minulými vzorci, které tě drží. Prozkoumáme kořeny a otevřeme nové možnosti pro přítomnost.</p>
+    </div>
+    <div class="service-card reveal">
+      <span class="service-icon">⋈</span>
+      <h3>Kurzy & workshopy</h3>
+      <p>Nauč se naslouchat vlastní intuici. Pravidelné workshopy pro začátečníky i pokročilé na cestě sebepoznání.</p>
+    </div>
+  </div>
+</section>
+
+<!-- KONTAKT -->
+<section id="kontakt" class="contact-section reveal">
+  <span class="section-label" style="display:block; text-align:center;">Kontakt</span>
+  <h2>Připravena <em>tě přivítat</em></h2>
+  <p>
+    Pokud cítíš, že je čas — napiš mi. Odpovím do 48 hodin.
+    Každá cesta začíná prvním krokem.
+  </p>
+  <a href="mailto:jana@janapopelka.cz" class="contact-link">
+    <span>✦</span> jana@janapopelka.cz
+  </a>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>© 2026 Jana Popelka &nbsp;·&nbsp; Ta, která vidí &nbsp;·&nbsp; Všechna práva vyhrazena</p>
+</footer>
+
+<script>
+  // ─── Stars ───
+  (function () {
+    const canvas = document.getElementById('stars-canvas');
+    const ctx = canvas.getContext('2d');
+    let stars = [];
+    let W, H;
+
+    function resize() {
+      W = canvas.width = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+
+    function initStars() {
+      stars = [];
+      const count = Math.floor((W * H) / 5000);
+      for (let i = 0; i < count; i++) {
+        stars.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: Math.random() * 1.2 + 0.2,
+          alpha: Math.random() * 0.6 + 0.1,
+          speed: Math.random() * 0.3 + 0.05,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+    }
+
+    let frame = 0;
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      frame++;
+      for (const s of stars) {
+        const a = s.alpha * (0.7 + 0.3 * Math.sin(frame * s.speed + s.phase));
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 248, 230, ${a})`;
+        ctx.fill();
+      }
+      requestAnimationFrame(draw);
+    }
+
+    resize();
+    initStars();
+    draw();
+    window.addEventListener('resize', () => { resize(); initStars(); });
+  })();
+
+  // ─── Reveal on scroll ───
+  (function () {
+    const els = document.querySelectorAll('.reveal');
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('visible');
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12 });
+    els.forEach(el => io.observe(el));
+  })();
+</script>
+
+</body>
+</html>
